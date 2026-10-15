@@ -19,18 +19,19 @@ jobs:
         shell: bash
         run: |
           set -e
-          ZIP="Kasir_Idris_Perbaikan_Semua_Fitur.zip"
-          if [ ! -f "$ZIP" ]; then
-            ZIP="$(find . -maxdepth 1 -type f -iname '*Kasir*Idris*.zip' | head -n 1)"
-          fi
-          if [ -z "$ZIP" ] || [ ! -f "$ZIP" ]; then
-            echo "ERROR: File ZIP Kasir Idris tidak ditemukan di folder utama repositori."
+          ZIP="$(find . -maxdepth 1 -type f -iname '*Kasir*Idris*.zip' | head -n 1)"
+
+          if [ -z "$ZIP" ]; then
+            echo "ERROR: ZIP Kasir Idris tidak ditemukan."
             ls -la
             exit 1
           fi
-          echo "Mengekstrak: $ZIP"
+
+          echo "Mengekstrak $ZIP"
           unzip -o "$ZIP" -d .
-          echo "Isi ZIP berhasil diekstrak."
+          test -f package.json
+          test -f www/index.html
+          test -f resources/kasir-idris-icon.png
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -47,22 +48,6 @@ jobs:
         shell: bash
         run: |
           set -e
-
-          test -f package.json || {
-            echo "ERROR: package.json tidak ditemukan"
-            exit 1
-          }
-
-          test -f www/index.html || {
-            echo "ERROR: www/index.html tidak ditemukan"
-            exit 1
-          }
-
-          test -f resources/kasir-idris-icon.png || {
-            echo "ERROR: Ikon aplikasi tidak ditemukan"
-            exit 1
-          }
-
           node - <<'NODE'
           const fs = require('fs');
           const html = fs.readFileSync('www/index.html', 'utf8');
@@ -79,11 +64,8 @@ jobs:
 
           const missing = required.filter(token => !html.includes(token));
 
-          if (missing.length > 0) {
-            console.error('Fitur wajib tidak ditemukan:');
-            for (const token of missing) {
-              console.error('- ' + token);
-            }
+          if (missing.length) {
+            console.error('Fitur wajib tidak ditemukan:', missing.join(', '));
             process.exit(1);
           }
 
@@ -99,24 +81,49 @@ jobs:
       - name: Add Android platform
         run: npx cap add android
 
+      - name: Install native Android print bridge
+        shell: bash
+        run: |
+          set -e
+          APP_DIR="android/app/src/main/java/id/yogafernando/kasiridris"
+          mkdir -p "$APP_DIR"
+          cp src/android/NativePrintPlugin.java "$APP_DIR/NativePrintPlugin.java"
+
+          MAIN="$APP_DIR/MainActivity.java"
+
+          cat > "$MAIN" <<'JAVA'
+          package id.yogafernando.kasiridris;
+
+          import android.os.Bundle;
+          import com.getcapacitor.BridgeActivity;
+
+          public class MainActivity extends BridgeActivity {
+              @Override
+              public void onCreate(Bundle savedInstanceState) {
+                  registerPlugin(NativePrintPlugin.class);
+                  super.onCreate(savedInstanceState);
+              }
+          }
+          JAVA
+
       - name: Apply launcher icon
         shell: bash
         run: |
           python -m pip install --quiet pillow
 
-          python - <<'PYICON'
+          python - <<'PY'
           from PIL import Image
           from pathlib import Path
 
-          src = Image.open("resources/kasir-idris-icon.png").convert("RGBA")
+          src = Image.open(
+              "resources/kasir-idris-icon.png"
+          ).convert("RGBA")
+
           w, h = src.size
           side = min(w, h)
-
           src = src.crop((
-              (w - side) // 2,
-              (h - side) // 2,
-              (w + side) // 2,
-              (h + side) // 2
+              (w-side)//2, (h-side)//2,
+              (w+side)//2, (h+side)//2
           ))
 
           res = Path("android/app/src/main/res")
@@ -138,15 +145,12 @@ jobs:
 
               icon.save(folder / "ic_launcher.png")
               icon.save(folder / "ic_launcher_round.png")
-
-          print("Ikon launcher berhasil dibuat.")
-          PYICON
+          PY
 
       - name: Configure Android camera permission
         shell: bash
         run: |
           set -e
-
           MANIFEST="android/app/src/main/AndroidManifest.xml"
 
           grep -q 'android.permission.CAMERA' "$MANIFEST" || \
@@ -154,8 +158,6 @@ jobs:
 
           grep -q 'android.hardware.camera' "$MANIFEST" || \
             sed -i '/<application/i\    <uses-feature android:name="android.hardware.camera" android:required="false" />' "$MANIFEST"
-
-          grep -q 'android.permission.CAMERA' "$MANIFEST"
 
       - name: Sync web app
         run: npx cap sync android
