@@ -1,74 +1,168 @@
+
 name: Build Kasir Idris APK
 
 on:
   workflow_dispatch:
   push:
-    branches: [ "main" ]
+    branches:
+      - main
 
 jobs:
   android:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
+
+      - name: Extract Kasir Idris ZIP
+        shell: bash
+        run: |
+          set -e
+          ZIP="Kasir_Idris_Perbaikan_Semua_Fitur.zip"
+          if [ ! -f "$ZIP" ]; then
+            ZIP="$(find . -maxdepth 1 -type f -iname '*Kasir*Idris*.zip' | head -n 1)"
+          fi
+          if [ -z "$ZIP" ] || [ ! -f "$ZIP" ]; then
+            echo "ERROR: File ZIP Kasir Idris tidak ditemukan di folder utama repositori."
+            ls -la
+            exit 1
+          fi
+          echo "Mengekstrak: $ZIP"
+          unzip -o "$ZIP" -d .
+          echo "Isi ZIP berhasil diekstrak."
+
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
+
       - name: Set up Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: 17
+
       - name: Verify source files
         shell: bash
         run: |
-          test -f package.json
-          test -f www/index.html
-          test -f resources/kasir-idris-icon.png
+          set -e
+
+          test -f package.json || {
+            echo "ERROR: package.json tidak ditemukan"
+            exit 1
+          }
+
+          test -f www/index.html || {
+            echo "ERROR: www/index.html tidak ditemukan"
+            exit 1
+          }
+
+          test -f resources/kasir-idris-icon.png || {
+            echo "ERROR: Ikon aplikasi tidak ditemukan"
+            exit 1
+          }
+
           node - <<'NODE'
           const fs = require('fs');
           const html = fs.readFileSync('www/index.html', 'utf8');
-          for (const token of ['function printTx(id)', 'receiptPreviewModal', 'function closeReceiptPreview()', 'async function startScan(mode)', 'function renderDeletedSales()', 'function syncDeletedSalesToServer()', 'function loadDeletedSalesFromServer()']) {
-            if (!html.includes(token)) { console.error('Fitur wajib tidak ditemukan:', token); process.exit(1); }
+
+          const required = [
+            'function printTx(id)',
+            'receiptPreviewModal',
+            'function closeReceiptPreview()',
+            'async function startScan(mode)',
+            'function renderDeletedSales()',
+            'function syncDeletedSalesToServer()',
+            'function loadDeletedSalesFromServer()'
+          ];
+
+          const missing = required.filter(token => !html.includes(token));
+
+          if (missing.length > 0) {
+            console.error('Fitur wajib tidak ditemukan:');
+            for (const token of missing) {
+              console.error('- ' + token);
+            }
+            process.exit(1);
           }
+
           console.log('Pemeriksaan sumber Kasir Idris lolos.');
           NODE
+
       - name: Install dependencies
         run: npm install
+
       - name: Bundle biometric bridge
         run: npm run build:biometric
+
       - name: Add Android platform
         run: npx cap add android
+
       - name: Apply launcher icon
+        shell: bash
         run: |
           python -m pip install --quiet pillow
+
           python - <<'PYICON'
           from PIL import Image
           from pathlib import Path
+
           src = Image.open("resources/kasir-idris-icon.png").convert("RGBA")
           w, h = src.size
           side = min(w, h)
-          src = src.crop(((w-side)//2, (h-side)//2, (w+side)//2, (h+side)//2))
+
+          src = src.crop((
+              (w - side) // 2,
+              (h - side) // 2,
+              (w + side) // 2,
+              (h + side) // 2
+          ))
+
           res = Path("android/app/src/main/res")
-          for density, size in {"mdpi":48,"hdpi":72,"xhdpi":96,"xxhdpi":144,"xxxhdpi":192}.items():
+
+          for density, size in {
+              "mdpi": 48,
+              "hdpi": 72,
+              "xhdpi": 96,
+              "xxhdpi": 144,
+              "xxxhdpi": 192
+          }.items():
               folder = res / f"mipmap-{density}"
               folder.mkdir(parents=True, exist_ok=True)
-              icon = src.resize((size,size), Image.Resampling.LANCZOS)
-              icon.save(folder/"ic_launcher.png")
-              icon.save(folder/"ic_launcher_round.png")
+
+              icon = src.resize(
+                  (size, size),
+                  Image.Resampling.LANCZOS
+              )
+
+              icon.save(folder / "ic_launcher.png")
+              icon.save(folder / "ic_launcher_round.png")
+
+          print("Ikon launcher berhasil dibuat.")
           PYICON
+
       - name: Configure Android camera permission
         shell: bash
         run: |
-          MANIFEST=android/app/src/main/AndroidManifest.xml
-          grep -q 'android.permission.CAMERA' "$MANIFEST" || sed -i '/<application/i\    <uses-permission android:name="android.permission.CAMERA" />' "$MANIFEST"
-          grep -q 'android.hardware.camera' "$MANIFEST" || sed -i '/<application/i\    <uses-feature android:name="android.hardware.camera" android:required="false" />' "$MANIFEST"
+          set -e
+
+          MANIFEST="android/app/src/main/AndroidManifest.xml"
+
+          grep -q 'android.permission.CAMERA' "$MANIFEST" || \
+            sed -i '/<application/i\    <uses-permission android:name="android.permission.CAMERA" />' "$MANIFEST"
+
+          grep -q 'android.hardware.camera' "$MANIFEST" || \
+            sed -i '/<application/i\    <uses-feature android:name="android.hardware.camera" android:required="false" />' "$MANIFEST"
+
           grep -q 'android.permission.CAMERA' "$MANIFEST"
+
       - name: Sync web app
         run: npx cap sync android
+
       - name: Build debug APK
         run: cd android && ./gradlew assembleDebug
+
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
